@@ -6,7 +6,10 @@
 
 
 
-
+/*
+ * Original code: https://github.com/felis/USB_Host_Shield_2.0/tree/master/examples/HID/USBHIDJoystick
+ * Modified by Nyanyan
+ */
 
 #include <usbhid.h>
 #include <hiduniversal.h>
