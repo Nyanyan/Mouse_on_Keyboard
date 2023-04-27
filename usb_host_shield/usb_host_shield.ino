@@ -1,7 +1,7 @@
 /*
- * Original code: https://github.com/felis/USB_Host_Shield_2.0/tree/master/examples/HID/USBHIDJoystick
- * Modified by Nyanyan
- */
+   Original code: https://github.com/felis/USB_Host_Shield_2.0/tree/master/examples/HID/USBHIDJoystick
+   Modified by Nyanyan
+*/
 
 #include <usbhid.h>
 #include <hiduniversal.h>
@@ -24,15 +24,21 @@ class JoystickReportParser : public HIDReportParser {
 void JoystickReportParser::Parse(USBHID *hid, bool is_rpt_id, uint8_t len, uint8_t *buf) {
   bool match = true;
 
+  for (int i = 0; i < 100; ++i) {
+    Serial.print(buf[i]);
+    Serial.print(' ');
+  }
+  Serial.println("");
+
   mouse_dx = -(int8_t)buf[2];
   mouse_dy = (int8_t)buf[1];
-
-  Serial.print('\t');
-  Serial.print(mouse_dx);
-  Serial.print('\t');
-  Serial.print(mouse_dy);
-  
-  Serial.println("");
+  /*
+    Serial.print('\t');
+    Serial.print(mouse_dx);
+    Serial.print('\t');
+    Serial.print(mouse_dy);
+    Serial.println("");
+  */
 }
 
 
