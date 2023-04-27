@@ -21,7 +21,7 @@
 #endif
 #include <SPI.h>
 
-#define N_OLD_DATA 4
+#define N_OLD_DATA 5
 
 int mouse_dx_data[N_OLD_DATA], mouse_dy_data[N_OLD_DATA];
 int raw_mouse_dx, raw_mouse_dy;
@@ -82,7 +82,7 @@ void setup() {
   Mouse.begin();
 }
 
-#define DELTA_WEIGHT 0.6
+#define DELTA_WEIGHT 0.7
 #define ABS_WEIGHT 0.2
 
 void loop() {
@@ -112,8 +112,8 @@ void loop() {
   float weighted_abs_dy = fabs(raw_mouse_dy) * ABS_WEIGHT;
   weighted_abs_dx = min(1.0, weighted_abs_dx);
   weighted_abs_dy = min(1.0, weighted_abs_dy);
-  mouse_dx = (dif_dx * 0.4 + weighted_abs_dx * 0.6) * raw_mouse_dx;
-  mouse_dy = (dif_dy * 0.4 + weighted_abs_dy * 0.6) * raw_mouse_dy;
+  mouse_dx = (dif_dx * 0.3 + weighted_abs_dx * 0.7) * raw_mouse_dx * 0.8;
+  mouse_dy = (dif_dy * 0.3 + weighted_abs_dy * 0.7) * raw_mouse_dy * 0.8;
 
   Serial.print(raw_mouse_dx);
   Serial.print('\t');
