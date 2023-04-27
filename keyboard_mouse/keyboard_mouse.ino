@@ -1,21 +1,8 @@
 #include <Mouse.h>
 
-#define X_PIN A0
-#define Y_PIN A1
 #define RIGHT_BUTTON 14
 #define LEFT_BUTTON 15
 #define MIDDLE_BUTTON 16
-
-#define X_CENTER 467
-#define Y_CENTER 530
-#define MOUSE_MARGIN 40
-#define MOUSE_ERROR 50
-
-#define X_SIGN 1
-#define Y_SIGN -1
-#define MOUSE_SPEED 0.0175
-#define WHEEL_SPEED 0.02
-#define MOUSE_MAX 24
 
 #define DELAY_MOUSE 12
 #define DELAY_WHEEL 70
