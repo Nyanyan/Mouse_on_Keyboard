@@ -1,90 +1,193 @@
 #include <Mouse.h>
 
-#define RIGHT_BUTTON 14
-#define LEFT_BUTTON 15
-#define MIDDLE_BUTTON 16
+#define RIGHT_BUTTON 4
+#define LEFT_BUTTON 5
+#define MIDDLE_BUTTON 6
 
-#define DELAY_MOUSE 12
-#define DELAY_WHEEL 70
 
-int modified_x_center, modified_y_center, pre_x, pre_y;
-bool last_small_x = false, last_small_y = false;
+
+
+
+#include <usbhid.h>
+#include <hiduniversal.h>
+#include <usbhub.h>
+#ifdef dobogusinclude
+#include <spi4teensy3.h>
+#endif
+#include <SPI.h>
+
+
+
+
+
+
+int mouse_dx, mouse_dy;
+
+struct GamePadEventData {
+  uint8_t X, Y, Z1, Z2, Rz;
+};
+
+class JoystickEvents {
+  public:
+    virtual void OnGamePadChanged(const GamePadEventData *evt);
+    virtual void OnHatSwitch(uint8_t hat);
+    virtual void OnButtonUp(uint8_t but_id);
+    virtual void OnButtonDn(uint8_t but_id);
+};
+
+#define RPT_GEMEPAD_LEN    5
+
+class JoystickReportParser : public HIDReportParser {
+    JoystickEvents *joyEvents;
+
+    uint8_t oldPad[RPT_GEMEPAD_LEN];
+    uint8_t oldHat;
+    uint16_t oldButtons;
+
+  public:
+    JoystickReportParser(JoystickEvents *evt);
+
+    virtual void Parse(USBHID *hid, bool is_rpt_id, uint8_t len, uint8_t *buf);
+};
+
+JoystickReportParser::JoystickReportParser(JoystickEvents *evt) :
+  joyEvents(evt),
+  oldHat(0xDE),
+  oldButtons(0) {
+  for (uint8_t i = 0; i < RPT_GEMEPAD_LEN; i++)
+    oldPad[i] = 0xD;
+}
+
+void JoystickReportParser::Parse(USBHID *hid, bool is_rpt_id, uint8_t len, uint8_t *buf) {
+  bool match = true;
+
+  // Checking if there are changes in report since the method was last called
+  for (uint8_t i = 0; i < RPT_GEMEPAD_LEN; i++)
+    if (buf[i] != oldPad[i]) {
+      match = false;
+      break;
+    }
+
+  // Calling Game Pad event handler
+  if (!match && joyEvents) {
+    joyEvents->OnGamePadChanged((const GamePadEventData*)buf);
+
+    for (uint8_t i = 0; i < RPT_GEMEPAD_LEN; i++) oldPad[i] = buf[i];
+  }
+
+  uint8_t hat = (buf[5] & 0xF);
+
+  // Calling Hat Switch event handler
+  if (hat != oldHat && joyEvents) {
+    joyEvents->OnHatSwitch(hat);
+    oldHat = hat;
+  }
+
+  uint16_t buttons = (0x0000 | buf[6]);
+  buttons <<= 4;
+  buttons |= (buf[5] >> 4);
+  uint16_t changes = (buttons ^ oldButtons);
+
+  // Calling Button Event Handler for every button changed
+  if (changes) {
+    for (uint8_t i = 0; i < 0x0C; i++) {
+      uint16_t mask = (0x0001 << i);
+
+      if (((mask & changes) > 0) && joyEvents) {
+        if ((buttons & mask) > 0)
+          joyEvents->OnButtonDn(i + 1);
+        else
+          joyEvents->OnButtonUp(i + 1);
+      }
+    }
+    oldButtons = buttons;
+  }
+}
+
+void mouse_mask(int &num){
+  if (num > 0){
+    --num;
+  }
+  if (num < 0){
+    ++num;
+  }
+}
+
+void JoystickEvents::OnGamePadChanged(const GamePadEventData *evt) {
+  mouse_dx = -(int8_t)evt->Z1;
+  mouse_dy = (int8_t)evt->Y;
+  mouse_mask(mouse_dx);
+  mouse_mask(mouse_dy);
+}
+
+void JoystickEvents::OnHatSwitch(uint8_t hat) {
+  Serial.print("Hat Switch: ");
+  PrintHex<uint8_t > (hat, 0x80);
+  Serial.println("");
+}
+
+void JoystickEvents::OnButtonUp(uint8_t but_id) {
+  Serial.print("Up: ");
+  Serial.println(but_id, DEC);
+}
+
+void JoystickEvents::OnButtonDn(uint8_t but_id) {
+  Serial.print("Dn: ");
+  Serial.println(but_id, DEC);
+}
+
+
+
+
+
+
+USB Usb;
+USBHub Hub(&Usb);
+HIDUniversal Hid(&Usb);
+JoystickEvents JoyEvents;
+JoystickReportParser Joy(&JoyEvents);
+
+
+
+
+
 
 void setup() {
-  pinMode(X_PIN, INPUT);
-  pinMode(Y_PIN, INPUT);
+  mouse_dx = 0;
+  mouse_dy = 0;
+  Serial.begin(115200);
+#if !defined(__MIPSEL__)
+  while (!Serial); // Wait for serial port to connect - used on Leonardo, Teensy and other boards with built-in USB CDC serial connection
+#endif
+  Serial.println("Start");
+
+  if (Usb.Init() == -1)
+    Serial.println("OSC did not start.");
+
+  delay(200);
+
+  if (!Hid.SetReportParser(0, &Joy))
+    ErrorMessage<uint8_t > (PSTR("SetReportParser"), 1);
+
   pinMode(RIGHT_BUTTON, INPUT_PULLUP);
   pinMode(LEFT_BUTTON, INPUT_PULLUP);
   pinMode(MIDDLE_BUTTON, INPUT_PULLUP);
-  modified_x_center = analogRead(X_PIN);
-  modified_y_center = analogRead(Y_PIN);
-  pre_x = modified_x_center;
-  pre_y = modified_y_center;
+  
   Mouse.begin();
-  Serial.begin(115200);
-}
-
-bool mouse_is_stop() {
-  int x = analogRead(X_PIN);
-  int y = analogRead(Y_PIN);
-  return 
-    modified_x_center - MOUSE_MARGIN <= x && x <= modified_x_center + MOUSE_MARGIN && 
-    modified_y_center - MOUSE_MARGIN <= y && y <= modified_y_center + MOUSE_MARGIN;
-}
-
-signed char calc_mouse_amount(int val, int center, int sign) {
-  long amount = 0;
-  int sign2 = 0;
-  if (val < center) {
-    amount = center - MOUSE_MARGIN - val;
-    sign2 = -1;
-  } else {
-    amount = val - center - MOUSE_MARGIN;
-    sign2 = 1;
-  }
-  long res = amount * 0.1 * amount * 0.1 * MOUSE_SPEED;
-  res = min(res, MOUSE_MAX);
-  return res * sign * sign2;
-}
-
-signed char calc_wheel_amount(int val, int center, int sign) {
-  int amount = 0;
-  int sign2 = 0;
-  if (val < center) {
-    amount = center - MOUSE_MARGIN - val;
-    sign2 = 1;
-  } else {
-    amount = val - center - MOUSE_MARGIN;
-    sign2 = -1;
-  }
-  return amount * sign * sign2 * WHEEL_SPEED;
 }
 
 void loop() {
+  Usb.Task();
+
   Serial.print(digitalRead(RIGHT_BUTTON));
   Serial.print(digitalRead(LEFT_BUTTON));
   Serial.print(digitalRead(MIDDLE_BUTTON));
-  Serial.print("\t");
-  Serial.print(analogRead(X_PIN));
-  Serial.print("\t");
-  Serial.print(analogRead(Y_PIN));
-  Serial.print("\t");
-  Serial.print(mouse_is_stop());
-  Serial.print("\t");
-  Serial.print(modified_x_center);
-  Serial.print("\t");
-  Serial.print(modified_y_center);
-  Serial.print("\t");
-  Serial.print(last_small_x);
-  Serial.print(last_small_y);
-  Serial.print("\t");
-  Serial.print(calc_mouse_amount(analogRead(X_PIN), modified_x_center, X_SIGN));
-  Serial.print("\t");
-  Serial.print(calc_mouse_amount(analogRead(Y_PIN), modified_y_center, Y_SIGN));
-  Serial.print("\t");
-  Serial.print(calc_wheel_amount(analogRead(Y_PIN), modified_y_center, Y_SIGN));
-  Serial.print("\n");
-
+  Serial.print("\tX: ");
+  Serial.print(mouse_dx);
+  Serial.print("\tY: ");
+  Serial.print(mouse_dy);
+  Serial.println("");
+  
   if (digitalRead(RIGHT_BUTTON)) {
     Mouse.release(MOUSE_RIGHT);
   } else {
@@ -97,42 +200,9 @@ void loop() {
     Mouse.press(MOUSE_LEFT);
   }
 
-  //if (mouse_is_stop()){
-  //  if (digitalRead(MIDDLE_BUTTON)) {
-  //    Mouse.release(MOUSE_MIDDLE);
-  //  } else {
-  //    Mouse.press(MOUSE_MIDDLE);
-  //  }
-  //} else {
-  int x = analogRead(X_PIN);
-  int y = analogRead(Y_PIN);
-
-  if (abs(x - modified_x_center) > MOUSE_MARGIN) {
-    bool n_last_small_x = x < modified_x_center;
-    if (last_small_x && !n_last_small_x) {
-      modified_x_center = X_CENTER + MOUSE_ERROR;
-    } else if (!last_small_x && n_last_small_x) {
-      modified_x_center = X_CENTER - MOUSE_ERROR;
-    }
-    last_small_x = n_last_small_x;
-  }
-
-  if (abs(y - modified_y_center) > MOUSE_MARGIN) {
-    bool n_last_small_y = y < modified_y_center;
-    if (last_small_y && !n_last_small_y) {
-      modified_y_center = Y_CENTER + MOUSE_ERROR;
-    } else if (!last_small_y && n_last_small_y) {
-      modified_y_center = Y_CENTER - MOUSE_ERROR;
-    }
-    last_small_y = n_last_small_y;
-  }
-
   if (!digitalRead(MIDDLE_BUTTON)) {
-    Mouse.move(0, 0, calc_wheel_amount(y, modified_y_center, Y_SIGN));
-    delay(DELAY_WHEEL);
+    Mouse.move(0, 0, mouse_dy);
   } else {
-    Mouse.move(calc_mouse_amount(x, modified_x_center, X_SIGN), calc_mouse_amount(y, modified_y_center, Y_SIGN), 0);
-    delay(DELAY_MOUSE);
+    Mouse.move(mouse_dx, mouse_dy, 0);
   }
-  //}
 }
