@@ -1,8 +1,9 @@
+
 #include <Mouse.h>
 
-#define RIGHT_BUTTON 4
-#define LEFT_BUTTON 5
-#define MIDDLE_BUTTON 6
+#define RIGHT_BUTTON 3
+#define LEFT_BUTTON 2
+#define MIDDLE_BUTTON 4
 
 
 
@@ -53,6 +54,11 @@ JoystickReportParser Joy;
 
 
 void setup() {
+  Mouse.begin();
+  pinMode(RIGHT_BUTTON, INPUT_PULLUP);
+  pinMode(LEFT_BUTTON, INPUT_PULLUP);
+  pinMode(MIDDLE_BUTTON, INPUT_PULLUP);
+
   for (int i = 0; i < N_OLD_DATA; ++i) {
     mouse_dx_data[i] = 0;
     mouse_dy_data[i] = 0;
@@ -61,33 +67,28 @@ void setup() {
   mouse_dy = 0;
   raw_mouse_dx = 0;
   raw_mouse_dy = 0;
-  Serial.begin(115200);
-#if !defined(__MIPSEL__)
-  while (!Serial); // Wait for serial port to connect - used on Leonardo, Teensy and other boards with built-in USB CDC serial connection
-#endif
-  Serial.println("Start");
+  //Serial.begin(115200);
+  //#if !defined(__MIPSEL__)
+  //while (!Serial); // Wait for serial port to connect - used on Leonardo, Teensy and other boards with built-in USB CDC serial connection
+  //#endif
+  //Serial.println("Start");
+  Usb.Init();
 
-  if (Usb.Init() == -1)
-    Serial.println("OSC did not start.");
+  //if (Usb.Init() == -1)
+  //  Serial.println("OSC did not start.");
 
-  delay(200);
+  delay(500);
 
   if (!Hid.SetReportParser(0, &Joy))
     ErrorMessage<uint8_t > (PSTR("SetReportParser"), 1);
-
-  pinMode(RIGHT_BUTTON, INPUT_PULLUP);
-  pinMode(LEFT_BUTTON, INPUT_PULLUP);
-  pinMode(MIDDLE_BUTTON, INPUT_PULLUP);
-
-  Mouse.begin();
 }
 
-#define DELTA_WEIGHT 0.7
-#define ABS_WEIGHT 0.2
+#define DELTA_WEIGHT 0.75
+#define ABS_WEIGHT 0.1
 
 void loop() {
   Usb.Task();
-  
+
   for (int i = 1; i < N_OLD_DATA; ++i) {
     mouse_dx_data[i - 1] = mouse_dx_data[i];
     mouse_dy_data[i - 1] = mouse_dy_data[i];
@@ -112,41 +113,33 @@ void loop() {
   float weighted_abs_dy = fabs(raw_mouse_dy) * ABS_WEIGHT;
   weighted_abs_dx = min(1.0, weighted_abs_dx);
   weighted_abs_dy = min(1.0, weighted_abs_dy);
-  mouse_dx = (dif_dx * 0.3 + weighted_abs_dx * 0.7) * raw_mouse_dx * 0.8;
-  mouse_dy = (dif_dy * 0.3 + weighted_abs_dy * 0.7) * raw_mouse_dy * 0.8;
+  mouse_dx = round((dif_dx * 0.25 + weighted_abs_dx * 0.75) * 1.0 * raw_mouse_dx);
+  mouse_dy = round((dif_dy * 0.25 + weighted_abs_dy * 0.75) * 1.0 * raw_mouse_dy);
 
-  Serial.print(raw_mouse_dx);
-  Serial.print('\t');
-  Serial.print(raw_mouse_dy);
-  Serial.print('\t');
-  Serial.print('\t');
-  Serial.print(dif_dx);
-  Serial.print('\t');
-  Serial.print(dif_dy);
-  Serial.print('\t');
-  Serial.print('\t');
-  Serial.print(weighted_abs_dx);
-  Serial.print('\t');
-  Serial.print(weighted_abs_dy);
-  Serial.print('\t');
-  
-  Serial.print('\t');
-  Serial.print(mouse_dx);
-  Serial.print('\t');
-  Serial.print(mouse_dy);
+  /*
+    Serial.print(raw_mouse_dx);
+    Serial.print('\t');
+    Serial.print(raw_mouse_dy);
+    Serial.print('\t');
+    Serial.print('\t');
+    Serial.print(dif_dx);
+    Serial.print('\t');
+    Serial.print(dif_dy);
+    Serial.print('\t');
+    Serial.print('\t');
+    Serial.print(weighted_abs_dx);
+    Serial.print('\t');
+    Serial.print(weighted_abs_dy);
+    Serial.print('\t');
 
-  Serial.println("");
-  
-/*
-  Serial.print(digitalRead(RIGHT_BUTTON));
-  Serial.print(digitalRead(LEFT_BUTTON));
-  Serial.print(digitalRead(MIDDLE_BUTTON));
-  Serial.print("\tX: ");
-  Serial.print(mouse_dx);
-  Serial.print("\tY: ");
-  Serial.print(mouse_dy);
-  Serial.println("");
-*/
+    Serial.print('\t');
+    Serial.print(mouse_dx);
+    Serial.print('\t');
+    Serial.print(mouse_dy);
+
+    Serial.println("");
+  */
+
   if (digitalRead(RIGHT_BUTTON)) {
     Mouse.release(MOUSE_RIGHT);
   } else {
@@ -158,10 +151,15 @@ void loop() {
   } else {
     Mouse.press(MOUSE_LEFT);
   }
-
+  //if (mouse_dy == 0 && !digitalRead(MIDDLE_BUTTON)){
+  //  Mouse.press(MOUSE_MIDDLE);
+  //} else{
   if (!digitalRead(MIDDLE_BUTTON)) {
-    Mouse.move(0, 0, mouse_dy);
+    Mouse.move(0, 0, -mouse_dy * 0.25);
+    delay(10);
   } else {
+    //Mouse.release(MOUSE_MIDDLE);
     Mouse.move(mouse_dx, mouse_dy, 0);
   }
+  //}
 }
