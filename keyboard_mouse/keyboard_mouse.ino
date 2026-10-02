@@ -40,9 +40,18 @@
 // from POINTER_SPEED * SLOW_RATIO at SPEED_LOW to POINTER_SPEED at SPEED_HIGH.
 // Speeds are in sensor counts per second.
 #define POINTER_SPEED 4.0
-#define SLOW_RATIO 0.25
+#define SLOW_RATIO 0.4
 #define SPEED_LOW 250.0
 #define SPEED_HIGH 1250.0
+
+// Per-direction correction of the sensor movement (screen directions).
+// Use these when the pointer moves faster in one direction than in the opposite one.
+// Moving the finger back and forth over the same span, this sensor reported about 2.2 times
+// as many counts to the left as to the right, so left is scaled down and right is scaled up.
+#define SCALE_LEFT 0.67
+#define SCALE_RIGHT 1.5
+#define SCALE_UP 1.0
+#define SCALE_DOWN 1.0
 
 // Wheel notches per sensor count while the middle button is held
 #define WHEEL_SPEED 0.15
@@ -149,14 +158,17 @@ void flush_movement(unsigned long now) {
   if (scroll_mode) {
     wheel_rem -= dy * WHEEL_SPEED;
   } else {
+    // Correct the sensor first so that the acceleration below also sees the corrected speed
+    float fx = dx * (dx < 0 ? SCALE_LEFT : SCALE_RIGHT);
+    float fy = dy * (dy < 0 ? SCALE_UP : SCALE_DOWN);
     // The time the movement took. Right after an idle period, assume two intervals.
     unsigned long dt = now - last_flush_ms;
     dt = constrain(dt, SEND_INTERVAL_MS, 2 * SEND_INTERVAL_MS);
     // Use the speed of the whole vector so that diagonal movement keeps its direction
-    float speed = sqrt((float)dx * dx + (float)dy * dy) * 1000.0 / dt;
+    float speed = sqrt(fx * fx + fy * fy) * 1000.0 / dt;
     float gain = pointer_gain(speed);
-    pointer_rem_x += dx * gain;
-    pointer_rem_y += dy * gain;
+    pointer_rem_x += fx * gain;
+    pointer_rem_y += fy * gain;
   }
   last_flush_ms = now;
 
