@@ -40,7 +40,7 @@
 // from POINTER_SPEED * SLOW_RATIO at SPEED_LOW to POINTER_SPEED at SPEED_HIGH.
 // Speeds are in sensor counts per second.
 #define POINTER_SPEED 4.0
-#define SLOW_RATIO 0.4
+#define SLOW_RATIO 0.5
 #define SPEED_LOW 250.0
 #define SPEED_HIGH 1250.0
 
@@ -69,6 +69,10 @@ float pointer_rem_x = 0.0, pointer_rem_y = 0.0, wheel_rem = 0.0;
 unsigned long last_flush_ms = 0;
 bool scroll_mode = false;
 
+// Sensor movement per screen direction before the SCALE_* correction, for tools/measure_direction.ps1
+unsigned long measure_right = 0, measure_left = 0, measure_down = 0, measure_up = 0;
+unsigned int measure_reports = 0;
+
 class SensorReportParser : public HIDReportParser {
   public:
     virtual void Parse(USBHID *hid, bool is_rpt_id, uint8_t len, uint8_t *buf);
@@ -95,6 +99,18 @@ void SensorReportParser::Parse(USBHID *hid, bool is_rpt_id, uint8_t len, uint8_t
   // Accumulate instead of overwriting so that each report is used exactly once
   sensor_dx += x;
   sensor_dy += y;
+
+  if (x > 0) {
+    measure_right += x;
+  } else {
+    measure_left -= x;
+  }
+  if (y > 0) {
+    measure_down += y;
+  } else {
+    measure_up -= y;
+  }
+  measure_reports++;
 }
 
 USB Usb;
@@ -185,8 +201,33 @@ void flush_movement(unsigned long now) {
   } while (full);
 }
 
+// While a program has the USB serial port open, prints the sensor movement per direction every 50 ms
+// as "D,<ms>,<right>,<left>,<down>,<up>,<reports>" (read by tools/measure_direction.ps1)
+void report_measurement(unsigned long now) {
+  static unsigned long last_ms = 0;
+  if (now - last_ms < 50) {
+    return;
+  }
+  last_ms = now;
+  if (measure_reports != 0 && Serial.dtr()) {
+    char line[64];
+    int len = snprintf(line, sizeof(line), "D,%lu,%lu,%lu,%lu,%lu,%u\r\n",
+                       now, measure_right, measure_left, measure_down, measure_up, measure_reports);
+    // Skip the line instead of waiting when the PC is not reading, so the mouse never stalls
+    if (Serial.availableForWrite() >= len) {
+      Serial.write(line, len);
+    }
+  }
+  measure_right = 0;
+  measure_left = 0;
+  measure_down = 0;
+  measure_up = 0;
+  measure_reports = 0;
+}
+
 void setup() {
   Mouse.begin();
+  Serial.begin(115200);
   pinMode(RIGHT_BUTTON, INPUT_PULLUP);
   pinMode(LEFT_BUTTON, INPUT_PULLUP);
   pinMode(MIDDLE_BUTTON, INPUT_PULLUP);
@@ -224,4 +265,6 @@ void loop() {
     pointer_rem_y = 0.0;
     wheel_rem = 0.0;
   }
+
+  report_measurement(now);
 }

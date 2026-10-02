@@ -17,6 +17,7 @@ USB マウスのセンサーを USB Host Shield 経由で Pro Micro (ATmega32u4)
 |---|---|
 | [keyboard_mouse/keyboard_mouse.ino](keyboard_mouse/keyboard_mouse.ino) | 本体のスケッチ |
 | [usb_host_shield/usb_host_shield.ino](usb_host_shield/usb_host_shield.ino) | 調査用スケッチ。USB Host Shield につないだ機器の HID レポートをそのままシリアルに表示します。センサーのどのバイトが X / Y なのかを調べるときに使います |
+| [tools/measure_direction.ps1](tools/measure_direction.ps1) | 方向ごとの偏りの測定ツール (PC 側、PowerShell)。`SCALE_*` の推奨値を出します ([使い方](#方向ごとの偏りの測定)) |
 
 ## ハードウェア
 
@@ -71,12 +72,59 @@ USB マウスのセンサーを USB Host Shield 経由で Pro Micro (ATmega32u4)
 | `SWAP_XY` / `INVERT_X` / `INVERT_Y` | センサーの向きに合わせた軸の入れ替え・反転 | 1 / 1 / 0 |
 | `SEND_INTERVAL_MS` | PC に送る間隔の最小値 (ms)。小さくすると滑らかになりますが、リモートデスクトップで遅延しやすくなります | 8 |
 | `POINTER_SPEED` | 速く動かしたときの倍率 (センサー 1 カウントあたりの画面ピクセル数) | 4.0 |
-| `SLOW_RATIO` | ゆっくり動かしたときの倍率 (`POINTER_SPEED` に対する割合) | 0.25 |
+| `SLOW_RATIO` | ゆっくり動かしたときの倍率 (`POINTER_SPEED` に対する割合) | 0.4 |
 | `SPEED_LOW` / `SPEED_HIGH` | 加速が始まる速さ / 最大になる速さ (カウント/秒) | 250 / 1250 |
-| `SCALE_LEFT` / `SCALE_RIGHT` / `SCALE_UP` / `SCALE_DOWN` | 方向ごとの補正倍率 (画面上の方向)。加速の前にかかります。このセンサーは同じ指の動きでも左方向を右方向の約 2.2 倍多く数えるので、左を小さく・右を大きくしています | 0.67 / 1.5 / 1.0 / 1.0 |
+| `SCALE_LEFT` / `SCALE_RIGHT` / `SCALE_UP` / `SCALE_DOWN` | 方向ごとの補正倍率 (画面上の方向)。加速の前にかかります。このセンサーは同じ指の動きでも左方向を右方向の約 2.2 倍多く数えるので、左を小さく・右を大きくしています。値は[測定ツール](#方向ごとの偏りの測定)で決められます | 0.67 / 1.5 / 1.0 / 1.0 |
 | `WHEEL_SPEED` | スクロールの速さ (1 カウントあたりのホイールのノッチ数) | 0.15 |
 
 ポインタの倍率は、速さに応じて `POINTER_SPEED × SLOW_RATIO` から `POINTER_SPEED` まで直線的に変わります。
+
+## 方向ごとの偏りの測定
+
+センサーが方向によって違うカウント数を出す (例: 左だけ速い・右だけ遅い) ときに、[tools/measure_direction.ps1](tools/measure_direction.ps1) で偏りを測って `SCALE_*` の値を決められます。
+
+### 使い方
+
+1. [keyboard_mouse.ino](keyboard_mouse/keyboard_mouse.ino) を書き込んでおきます。測定用の出力は最初から入っているので、測定用に書き換える必要はありません。
+2. Arduino IDE のシリアルモニタなど、同じポートを開いているものがあれば閉じます。
+3. リポジトリのフォルダで次のコマンドを実行します (`COM9` は Arduino のポートに合わせてください)。
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File tools\measure_direction.ps1 -Port COM9
+   ```
+
+4. 画面の指示に従ってセンサーを動かします。
+   - 指を**同じ 2 点の間で**、左右に 20 往復ほど動かします (最後は最初の位置に戻します)。画面上のポインタの位置ではなく、指の位置を揃えるのがポイントです。
+   - 少し止めてから、上下も同じように 20 往復ほど動かします。
+   - 測定中もマウスは普通に動きます。
+5. 終わったら Enter キーを押します。方向ごとの集計と推奨値が表示されます。
+
+   ```
+   [左右]
+     左: 合計   2392   往復  21 回   1 回あたり  104.0
+     右: 合計   1067   往復  21 回   1 回あたり   44.0
+     → 左は右の 2.24 倍
+     推奨値:
+       #define SCALE_LEFT 0.67
+       #define SCALE_RIGHT 1.50
+   ```
+
+6. 推奨値を [keyboard_mouse.ino](keyboard_mouse/keyboard_mouse.ino) の `SCALE_*` に書き写して、書き込み直します。推奨値は補正前のカウント数から計算しているので、今の `SCALE_*` の値に関係なく、そのまま書き換えて使えます。
+
+### オプション
+
+| オプション | 意味 |
+|---|---|
+| `-Port COM9` | Arduino のシリアルポート |
+| `-Seconds 120` | 測定の最長時間 (秒)。この時間が過ぎても終了します。初期値は 120 |
+| `-OutCsv measure.csv` | 測定データを CSV に保存します |
+| `-InputCsv measure.csv` | 保存した CSV を集計します (Arduino は不要) |
+
+### 仕組み
+
+- [keyboard_mouse.ino](keyboard_mouse/keyboard_mouse.ino) は、PC がシリアルポートを開いている (DTR が ON の) 間だけ、50ms ごとに `D,<ms>,<右>,<左>,<下>,<上>,<レポート数>` を出力します。値は軸の入れ替え・反転の後、`SCALE_*` をかける前のカウント数です。PC が読み取っていないときは出力を飛ばすので、マウスの動作が止まることはありません。
+- 指を同じ 2 点の間で往復させれば、実際に動いた距離は行きと帰りで同じなので、カウント数の比がそのままセンサーの偏りになります。指を動かす速さにも左右されません。
+- 推奨値は、比 r に対して √r で両側を補正します (例: 左が右の r 倍なら `SCALE_LEFT = 1/√r`, `SCALE_RIGHT = √r`)。左右の平均の速さは変わりません。
 
 ## 仕組み
 
@@ -95,7 +143,9 @@ USB マウスのセンサーを USB Host Shield 経由で Pro Micro (ATmega32u4)
 | ポインタが動かない (ボタンは動く) | センサーを読み取れていません。センサーを変えた場合は、[usb_host_shield.ino](usb_host_shield/usb_host_shield.ino) を書き込んでシリアルモニタ (115200bps) でレポートを確認し、移動量が入っているバイトに合わせて `SensorReportParser::Parse()` を直してください。なお、このセンサーは `HIDBoot` (boot protocol) では認識できませんでした |
 | ポインタの向きがおかしい | `SWAP_XY` / `INVERT_X` / `INVERT_Y` を変えてください |
 | 速すぎる / 遅すぎる | `POINTER_SPEED` と `SLOW_RATIO` を調整してください |
-| 特定の方向だけ速い / 遅い | `SCALE_LEFT` / `SCALE_RIGHT` / `SCALE_UP` / `SCALE_DOWN` で補正してください。指を同じ 2 点の間で往復させたときの左右 (上下) のカウント数の比が目安になります |
+| 特定の方向だけ速い / 遅い | [測定ツール](#方向ごとの偏りの測定)で偏りを測り、推奨値を `SCALE_LEFT` / `SCALE_RIGHT` / `SCALE_UP` / `SCALE_DOWN` に設定してください |
+| 測定ツールで「データがありません」と出る | センサーを動かしたか、測定用の出力が入った keyboard_mouse.ino が書き込まれているかを確認してください |
+| 測定ツールで「を開けませんでした」と出る | ポート名と、Arduino IDE のシリアルモニタなどが同じポートを開いていないかを確認してください |
 
 ## クレジット
 
