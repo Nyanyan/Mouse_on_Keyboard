@@ -24,7 +24,7 @@ class JoystickReportParser : public HIDReportParser {
 void JoystickReportParser::Parse(USBHID *hid, bool is_rpt_id, uint8_t len, uint8_t *buf) {
   bool match = true;
 
-  for (int i = 0; i < 100; ++i) {
+  for (int i = 0; i < len; ++i) {
     Serial.print(buf[i]);
     Serial.print(' ');
   }

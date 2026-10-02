@@ -1,16 +1,13 @@
-
-#include <Mouse.h>
-
-#define RIGHT_BUTTON 3
-#define LEFT_BUTTON 2
-#define MIDDLE_BUTTON 4
-
-
-
 /*
    Original code: https://github.com/felis/USB_Host_Shield_2.0/tree/master/examples/HID/USBHIDJoystick
    Modified by Nyanyan
 */
+
+#if !defined(USBCON)
+#error "This sketch needs a board with native USB (ATmega32u4: Pro Micro, Leonardo, Micro). Arduino Pro / Pro Mini (ATmega328P) cannot act as a USB mouse."
+#endif
+
+#include <Mouse.h>
 
 #include <usbhid.h>
 #include <hiduniversal.h>
@@ -22,36 +19,159 @@
 #endif
 #include <SPI.h>
 
-#define N_OLD_DATA 5
+#define RIGHT_BUTTON 3
+#define LEFT_BUTTON 2
+#define MIDDLE_BUTTON 4
 
-int mouse_dx_data[N_OLD_DATA], mouse_dy_data[N_OLD_DATA];
-int raw_mouse_dx, raw_mouse_dy;
-int mouse_dx, mouse_dy;
+// After a button changes, ignore further changes for this time to filter out contact bounce
+#define DEBOUNCE_MS 10
 
-class JoystickReportParser : public HIDReportParser {
+// The sensor is mounted rotated, so map its axes to the screen axes
+// (current setting: screen x = -sensor y, screen y = sensor x)
+#define SWAP_XY 1
+#define INVERT_X 1
+#define INVERT_Y 0
+
+// Minimum interval between reports to the PC (1 or more). Sending a report on every loop
+// floods remote desktop software such as Chrome Remote Desktop and makes the pointer lag.
+#define SEND_INTERVAL_MS 8
+
+// Pointer acceleration. The gain (screen pixels per sensor count) grows linearly
+// from POINTER_SPEED * SLOW_RATIO at SPEED_LOW to POINTER_SPEED at SPEED_HIGH.
+// Speeds are in sensor counts per second.
+#define POINTER_SPEED 4.0
+#define SLOW_RATIO 0.25
+#define SPEED_LOW 250.0
+#define SPEED_HIGH 1250.0
+
+// Wheel notches per sensor count while the middle button is held
+#define WHEEL_SPEED 0.15
+
+#if SEND_INTERVAL_MS < 1
+#error "SEND_INTERVAL_MS must be 1 or more"
+#endif
+
+// Sensor movement received since the last flush
+long sensor_dx = 0, sensor_dy = 0;
+
+// Fractions of a pixel / notch not sent yet
+float pointer_rem_x = 0.0, pointer_rem_y = 0.0, wheel_rem = 0.0;
+
+unsigned long last_flush_ms = 0;
+bool scroll_mode = false;
+
+class SensorReportParser : public HIDReportParser {
   public:
     virtual void Parse(USBHID *hid, bool is_rpt_id, uint8_t len, uint8_t *buf);
 };
 
-void JoystickReportParser::Parse(USBHID *hid, bool is_rpt_id, uint8_t len, uint8_t *buf) {
-  raw_mouse_dx = -(int8_t)buf[2];
-  raw_mouse_dy = (int8_t)buf[1];
+void SensorReportParser::Parse(USBHID *hid, bool is_rpt_id, uint8_t len, uint8_t *buf) {
+  // The sensor reports its X and Y movement in buf[1] and buf[2] (checked with usb_host_shield.ino)
+  if (len < 3) {
+    return;
+  }
+  int x = (int8_t)buf[1];
+  int y = (int8_t)buf[2];
+#if SWAP_XY
+  int tmp = x;
+  x = y;
+  y = tmp;
+#endif
+#if INVERT_X
+  x = -x;
+#endif
+#if INVERT_Y
+  y = -y;
+#endif
+  // Accumulate instead of overwriting so that each report is used exactly once
+  sensor_dx += x;
+  sensor_dy += y;
 }
-
-
-
-
-
 
 USB Usb;
 USBHub Hub(&Usb);
 HIDUniversal Hid(&Usb);
-JoystickReportParser Joy;
+SensorReportParser Parser;
 
+struct Button {
+  uint8_t pin;
+  bool pressed;
+  unsigned long changed_ms;
+};
 
+Button left_button = {LEFT_BUTTON, false, 0};
+Button right_button = {RIGHT_BUTTON, false, 0};
+Button middle_button = {MIDDLE_BUTTON, false, 0};
 
+// Returns true when the state of the button changes
+bool update_button(Button &button, unsigned long now) {
+  bool pressed = !digitalRead(button.pin);
+  if (pressed == button.pressed || now - button.changed_ms < DEBOUNCE_MS) {
+    return false;
+  }
+  button.pressed = pressed;
+  button.changed_ms = now;
+  return true;
+}
 
+void send_button(uint8_t mouse_button, bool pressed) {
+  if (pressed) {
+    Mouse.press(mouse_button);
+  } else {
+    Mouse.release(mouse_button);
+  }
+}
 
+// Takes the whole part out of rem, up to what fits in one report
+signed char take_whole(float &rem) {
+  long whole = lround(rem);
+  whole = constrain(whole, -127, 127);
+  rem -= whole;
+  return whole;
+}
+
+float pointer_gain(float speed) {
+  float t = (speed - SPEED_LOW) / (SPEED_HIGH - SPEED_LOW);
+  t = constrain(t, 0.0, 1.0);
+  return POINTER_SPEED * (SLOW_RATIO + (1.0 - SLOW_RATIO) * t);
+}
+
+// Converts the sensor movement received since the last flush and sends it to the PC
+void flush_movement(unsigned long now) {
+  long dx = sensor_dx, dy = sensor_dy;
+  sensor_dx = 0;
+  sensor_dy = 0;
+  // Send nothing while there is no movement
+  if (dx == 0 && dy == 0) {
+    return;
+  }
+
+  if (scroll_mode) {
+    wheel_rem -= dy * WHEEL_SPEED;
+  } else {
+    // The time the movement took. Right after an idle period, assume two intervals.
+    unsigned long dt = now - last_flush_ms;
+    dt = constrain(dt, SEND_INTERVAL_MS, 2 * SEND_INTERVAL_MS);
+    // Use the speed of the whole vector so that diagonal movement keeps its direction
+    float speed = sqrt((float)dx * dx + (float)dy * dy) * 1000.0 / dt;
+    float gain = pointer_gain(speed);
+    pointer_rem_x += dx * gain;
+    pointer_rem_y += dy * gain;
+  }
+  last_flush_ms = now;
+
+  // Movement too large for one report is split into several, so nothing is left to lag behind
+  bool full;
+  do {
+    signed char x = take_whole(pointer_rem_x);
+    signed char y = take_whole(pointer_rem_y);
+    signed char wheel = take_whole(wheel_rem);
+    if (x != 0 || y != 0 || wheel != 0) {
+      Mouse.move(x, y, wheel);
+    }
+    full = abs(x) == 127 || abs(y) == 127 || abs(wheel) == 127;
+  } while (full);
+}
 
 void setup() {
   Mouse.begin();
@@ -59,107 +179,37 @@ void setup() {
   pinMode(LEFT_BUTTON, INPUT_PULLUP);
   pinMode(MIDDLE_BUTTON, INPUT_PULLUP);
 
-  for (int i = 0; i < N_OLD_DATA; ++i) {
-    mouse_dx_data[i] = 0;
-    mouse_dy_data[i] = 0;
-  }
-  mouse_dx = 0;
-  mouse_dy = 0;
-  raw_mouse_dx = 0;
-  raw_mouse_dy = 0;
-  //Serial.begin(115200);
-  //#if !defined(__MIPSEL__)
-  //while (!Serial); // Wait for serial port to connect - used on Leonardo, Teensy and other boards with built-in USB CDC serial connection
-  //#endif
-  //Serial.println("Start");
   Usb.Init();
-
-  //if (Usb.Init() == -1)
-  //  Serial.println("OSC did not start.");
 
   delay(500);
 
-  if (!Hid.SetReportParser(0, &Joy))
+  if (!Hid.SetReportParser(0, &Parser))
     ErrorMessage<uint8_t > (PSTR("SetReportParser"), 1);
 }
-
-#define DELTA_WEIGHT 0.75
-#define ABS_WEIGHT 0.1
 
 void loop() {
   Usb.Task();
 
-  for (int i = 1; i < N_OLD_DATA; ++i) {
-    mouse_dx_data[i - 1] = mouse_dx_data[i];
-    mouse_dy_data[i - 1] = mouse_dy_data[i];
-  }
-  mouse_dx_data[N_OLD_DATA - 1] = raw_mouse_dx;
-  mouse_dy_data[N_OLD_DATA - 1] = raw_mouse_dy;
+  unsigned long now = millis();
+  bool left_changed = update_button(left_button, now);
+  bool right_changed = update_button(right_button, now);
+  bool middle_changed = update_button(middle_button, now);
 
-  float avg_dx = 0.0, avg_dy = 0.0;
-  for (int i = 0; i < N_OLD_DATA; ++i) {
-    avg_dx += mouse_dx_data[i];
-    avg_dy += mouse_dy_data[i];
-  }
-  avg_dx /= N_OLD_DATA;
-  avg_dy /= N_OLD_DATA;
-  float dif_dx = fabs(raw_mouse_dx - avg_dx);
-  float dif_dy = fabs(raw_mouse_dy - avg_dy);
-  dif_dx *= DELTA_WEIGHT;
-  dif_dy *= DELTA_WEIGHT;
-  dif_dx = min(1.0, dif_dx);
-  dif_dy = min(1.0, dif_dy);
-  float weighted_abs_dx = fabs(raw_mouse_dx) * ABS_WEIGHT;
-  float weighted_abs_dy = fabs(raw_mouse_dy) * ABS_WEIGHT;
-  weighted_abs_dx = min(1.0, weighted_abs_dx);
-  weighted_abs_dy = min(1.0, weighted_abs_dy);
-  mouse_dx = round((dif_dx * 0.25 + weighted_abs_dx * 0.75) * 1.0 * raw_mouse_dx);
-  mouse_dy = round((dif_dy * 0.25 + weighted_abs_dy * 0.75) * 1.0 * raw_mouse_dy);
-
-  /*
-    Serial.print(raw_mouse_dx);
-    Serial.print('\t');
-    Serial.print(raw_mouse_dy);
-    Serial.print('\t');
-    Serial.print('\t');
-    Serial.print(dif_dx);
-    Serial.print('\t');
-    Serial.print(dif_dy);
-    Serial.print('\t');
-    Serial.print('\t');
-    Serial.print(weighted_abs_dx);
-    Serial.print('\t');
-    Serial.print(weighted_abs_dy);
-    Serial.print('\t');
-
-    Serial.print('\t');
-    Serial.print(mouse_dx);
-    Serial.print('\t');
-    Serial.print(mouse_dy);
-
-    Serial.println("");
-  */
-
-  if (digitalRead(RIGHT_BUTTON)) {
-    Mouse.release(MOUSE_RIGHT);
-  } else {
-    Mouse.press(MOUSE_RIGHT);
+  // On a button change, first send the movement made before it so that the click lands in place
+  if (left_changed || right_changed || middle_changed || now - last_flush_ms >= SEND_INTERVAL_MS) {
+    flush_movement(now);
   }
 
-  if (digitalRead(LEFT_BUTTON)) {
-    Mouse.release(MOUSE_LEFT);
-  } else {
-    Mouse.press(MOUSE_LEFT);
+  if (left_changed) {
+    send_button(MOUSE_LEFT, left_button.pressed);
   }
-  //if (mouse_dy == 0 && !digitalRead(MIDDLE_BUTTON)){
-  //  Mouse.press(MOUSE_MIDDLE);
-  //} else{
-  if (!digitalRead(MIDDLE_BUTTON)) {
-    Mouse.move(0, 0, -mouse_dy * 0.25);
-    delay(10);
-  } else {
-    //Mouse.release(MOUSE_MIDDLE);
-    Mouse.move(mouse_dx, mouse_dy, 0);
+  if (right_changed) {
+    send_button(MOUSE_RIGHT, right_button.pressed);
   }
-  //}
+  if (middle_changed) {
+    scroll_mode = middle_button.pressed;
+    pointer_rem_x = 0.0;
+    pointer_rem_y = 0.0;
+    wheel_rem = 0.0;
+  }
 }
